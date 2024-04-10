@@ -45,6 +45,8 @@ public interface ICacheService
 }
 public class CacheService : ICacheService
 {
+    private static readonly object syncLock = new();
+
     private readonly ILogger<CacheService> _logger;
     private readonly IUnitOfWork _unitOfWork;
     private readonly IDirectoryService _directoryService;
@@ -164,11 +166,16 @@ public class CacheService : ICacheService
     {
         _directoryService.ExistOrCreate(_directoryService.CacheDirectory);
         var chapter = await _unitOfWork.ChapterRepository.GetChapterAsync(chapterId);
-        var extractPath = GetCachePath(chapterId);
 
+        var extractPath = GetCachePath(chapterId);
         if (_directoryService.Exists(extractPath)) return chapter;
-        var files = chapter?.Files.ToList();
-        ExtractChapterFiles(extractPath, files, extractPdfToImages);
+
+        lock(syncLock)
+        {
+            if (_directoryService.Exists(extractPath)) return chapter;
+            var files = chapter?.Files.ToList();
+            ExtractChapterFiles(extractPath, files, extractPdfToImages);
+        }
 
         return  chapter;
     }
