@@ -1,8 +1,10 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using API.Data;
 using API.DTOs.Reader;
@@ -50,6 +52,8 @@ public class CacheService : ICacheService
     private readonly IDirectoryService _directoryService;
     private readonly IReadingItemService _readingItemService;
     private readonly IBookmarkService _bookmarkService;
+
+    private static readonly ConcurrentDictionary<int, SemaphoreSlim> ExtractLocks = new();
 
     public CacheService(ILogger<CacheService> logger, IUnitOfWork unitOfWork,
         IDirectoryService directoryService, IReadingItemService readingItemService,
@@ -166,11 +170,28 @@ public class CacheService : ICacheService
         var chapter = await _unitOfWork.ChapterRepository.GetChapterAsync(chapterId);
         var extractPath = GetCachePath(chapterId);
 
-        if (_directoryService.Exists(extractPath)) return chapter;
-        var files = chapter?.Files.ToList();
-        ExtractChapterFiles(extractPath, files, extractPdfToImages);
+        SemaphoreSlim? extractLock;
+        while (true) {
+            if (ExtractLocks.TryGetValue(chapterId, out extractLock)){
+                // another thread is checking the cache folder or extracting it.
+                await extractLock.WaitAsync();
+                extractLock.Release();
+            }
 
-        return  chapter;
+            extractLock = new SemaphoreSlim(0,1);
+            if(ExtractLocks.TryAdd(chapterId, extractLock)){
+                try {
+                    if(_directoryService.Exists(extractPath)) return chapter;
+
+                    var files = chapter?.Files.ToList();
+                    ExtractChapterFiles(extractPath, files, extractPdfToImages);
+                    return chapter;
+                } finally {
+                    extractLock.Release();
+                    ExtractLocks.Remove(chapterId, out _);
+                }
+            }
+        }
     }
 
     /// <summary>
